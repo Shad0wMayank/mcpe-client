@@ -1,0 +1,463 @@
+name: Build MCPE Client APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create project files
+        run: |
+          mkdir -p app app/src/main app/src/main/java/com/mcpeclient/app app/src/main/res/values app/src/main/res/xml
+          cat > settings.gradle.kts <<'MCPE_EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "MCPEClient"
+          include(":app")
+          MCPE_EOF
+          cat > build.gradle.kts <<'MCPE_EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          MCPE_EOF
+          cat > gradle.properties <<'MCPE_EOF'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          android.nonTransitiveRClass=true
+          MCPE_EOF
+          cat > app/build.gradle.kts <<'MCPE_EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.mcpeclient.app"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.mcpeclient.app"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+          MCPE_EOF
+          cat > app/src/main/AndroidManifest.xml <<'MCPE_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <!-- Lets the app see whether Minecraft is installed (Android 11+). -->
+              <queries>
+                  <package android:name="com.mojang.minecraftpe" />
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:icon="@android:drawable/sym_def_app_icon"
+                  android:label="@string/app_name"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".OverlayService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse|mediaProjection">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="On-screen HUD overlay for a game" />
+                  </service>
+
+                  <service
+                      android:name=".ClientAccessibilityService"
+                      android:exported="false"
+                      android:label="@string/app_name"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+              </application>
+          </manifest>
+          MCPE_EOF
+          cat > app/src/main/res/xml/accessibility_config.xml <<'MCPE_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:canControlMagnification="true"
+              android:canPerformGestures="true"
+              android:description="@string/a11y_desc"
+              android:notificationTimeout="100" />
+          MCPE_EOF
+          cat > app/src/main/res/values/strings.xml <<'MCPE_EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">MCPE Client</string>
+              <string name="a11y_desc">Used only for the Zoom button (screen magnification) and the Q button (a tap or press you calibrate). It does not read screen content.</string>
+          </resources>
+          MCPE_EOF
+          cat > app/src/main/java/com/mcpeclient/app/Prefs.kt <<'MCPE_EOF'
+          package com.mcpeclient.app
+
+          import android.content.Context
+          import android.content.SharedPreferences
+
+          /** Tiny wrapper around SharedPreferences shared by the UI and the overlay service. */
+          object Prefs {
+              const val NAME = "client_prefs"
+
+              const val FPS = "mod_fps"
+              const val CPS = "mod_cps"
+              const val ZOOM = "mod_zoom"
+              const val QBTN = "mod_q"
+              const val EDIT = "edit_layout"
+
+              const val ZOOM_LEVEL = "zoom_level_x10" // 15..80  => 1.5x..8.0x
+              const val Q_HOLD = "q_hold_ms"          // 10..1500 ms
+              const val Q_X = "q_x"
+              const val Q_Y = "q_y"
+
+              fun sp(c: Context): SharedPreferences = c.getSharedPreferences(NAME, Context.MODE_PRIVATE)
+
+              fun bool(c: Context, key: String, def: Boolean): Boolean = sp(c).getBoolean(key, def)
+              fun int(c: Context, key: String, def: Int): Int = sp(c).getInt(key, def)
+
+              fun putBool(c: Context, key: String, v: Boolean) = sp(c).edit().putBoolean(key, v).apply()
+              fun putInt(c: Context, key: String, v: Int) = sp(c).edit().putInt(key, v).apply()
+          }
+          MCPE_EOF
+          cat > app/src/main/java/com/mcpeclient/app/ClientAccessibilityService.kt <<'MCPE_EOF'
+          package com.mcpeclient.app
+
+          import android.accessibilityservice.AccessibilityService
+          import android.accessibilityservice.GestureDescription
+          import android.content.Intent
+          import android.graphics.Path
+          import android.view.accessibility.AccessibilityEvent
+
+          /**
+           * Gives the overlay two abilities that need accessibility permission:
+           *  - full-screen magnification (the Zoom button)
+           *  - replaying a press at a saved screen point (the Q button)
+           *
+           * It does not read any screen content (no canRetrieveWindowContent).
+           */
+          class ClientAccessibilityService : AccessibilityService() {
+
+              companion object {
+                  @Volatile
+                  var instance: ClientAccessibilityService? = null
+                      private set
+              }
+
+              override fun onServiceConnected() {
+                  super.onServiceConnected()
+                  instance = this
+              }
+
+              override fun onUnbind(intent: Intent?): Boolean {
+                  if (instance === this) instance = null
+                  return super.onUnbind(intent)
+              }
+
+              override fun onDestroy() {
+                  if (instance === this) instance = null
+                  super.onDestroy()
+              }
+
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+
+              override fun onInterrupt() {}
+
+              /** Magnify the whole screen around its centre. */
+              fun zoomIn(scale: Float) {
+                  val dm = resources.displayMetrics
+                  val mc = magnificationController
+                  mc.setScale(scale.coerceIn(1.5f, 8f), true)
+                  mc.setCenter(dm.widthPixels / 2f, dm.heightPixels / 2f, true)
+              }
+
+              fun zoomOut() {
+                  magnificationController.reset(true)
+              }
+
+              /** Press at (x, y) for [durationMs]. A short duration is a tap, a long one a long-press. */
+              fun press(x: Float, y: Float, durationMs: Long) {
+                  val path = Path().apply { moveTo(x, y) }
+                  val stroke = GestureDescription.StrokeDescription(path, 0L, durationMs.coerceAtLeast(1L))
+                  val gesture = GestureDescription.Builder().addStroke(stroke).build()
+                  dispatchGesture(gesture, null, null)
+              }
+          }
+          MCPE_EOF
+          cat > app/src/main/java/com/mcpeclient/app/OverlayService.kt <<'MCPE_EOF'
+          package com.mcpeclient.app
+
+          import android.app.Activity
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.content.pm.ServiceInfo
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.graphics.Typeface
+          import android.graphics.drawable.GradientDrawable
+          import android.hardware.display.DisplayManager
+          import android.hardware.display.VirtualDisplay
+          import android.media.ImageReader
+          import android.media.projection.MediaProjection
+          import android.media.projection.MediaProjectionManager
+          import android.os.Build
+          import android.os.Handler
+          import android.os.HandlerThread
+          import android.os.IBinder
+          import android.os.Looper
+          import android.os.SystemClock
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.view.WindowManager
+          import android.widget.TextView
+          import android.widget.Toast
+          import java.util.concurrent.atomic.AtomicInteger
+          import kotlin.math.abs
+          import kotlin.math.max
+          import kotlin.math.roundToInt
+
+          /**
+           * Draws the HUD (FPS + CPS), the Zoom button and the Q button on top of Minecraft.
+           *
+           * - CPS: a 1x1 window with FLAG_WATCH_OUTSIDE_TOUCH receives ACTION_OUTSIDE for every
+           *   touch-down anywhere else on screen. Counted over the last second.
+           * - FPS: a tiny mirrored virtual display (MediaProjection). A frame is produced each time the
+           *   screen content changes, so frames/second approximates the game's frame rate. It is an
+           *   estimate, capped at the display refresh rate.
+           * - Zoom / Q: delegated to [ClientAccessibilityService].
+           */
+          class OverlayService : Service() {
+
+              companion object {
+                  const val ACTION_STOP = "com.mcpeclient.app.STOP"
+                  const val ACTION_CALIBRATE = "com.mcpeclient.app.CALIBRATE"
+                  const val EXTRA_CODE = "capture_code"
+                  const val EXTRA_DATA = "capture_data"
+
+                  private const val CHANNEL_ID = "client"
+                  private const val NOTIF_ID = 1
+                  private const val KEY_HUD = "hud"
+                  private const val KEY_ZOOM = "zoombtn"
+                  private const val KEY_Q = "qbtn"
+
+                  private const val BASE_FLAGS = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                      WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                      WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                      WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+
+                  // Android 12+ blocks touches that pass through overlays with alpha above 0.8.
+                  private const val OVERLAY_ALPHA = 0.8f
+
+                  @Volatile
+                  var running = false
+                      private set
+              }
+
+              private class Element(val key: String, val view: View, val lp: WindowManager.LayoutParams)
+
+              private lateinit var wm: WindowManager
+              private val main = Handler(Looper.getMainLooper())
+              private val elements = mutableListOf<Element>()
+              private var hud: TextView? = null
+              private var watcher: View? = null
+              private var calibrationView: View? = null
+              private var isForeground = false
+              private var zoomed = false
+
+              // Main thread only.
+              private val clicks = ArrayDeque<Long>()
+              private var lastOwnTouch = 0L
+
+              // FPS capture.
+              private val frameCount = AtomicInteger()
+              private var captureThread: HandlerThread? = null
+              private var projection: MediaProjection? = null
+              private var reader: ImageReader? = null
+              private var virtualDisplay: VirtualDisplay? = null
+
+              @Volatile
+              private var fpsCapturing = false
+              private var fps = 0
+              private var lastTick = 0L
+
+              private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+                  main.post { refreshElements() }
+              }
+
+              private val tick = object : Runnable {
+                  override fun run() {
+                      val now = SystemClock.uptimeMillis()
+                      while (clicks.isNotEmpty() && now - clicks.first() > 1000) clicks.removeFirst()
+                      if (fpsCapturing) {
+                          val n = frameCount.getAndSet(0)
+                          val dt = now - lastTick
+                          if (dt > 0) fps = (n * 1000f / dt).roundToInt()
+                      }
+                      lastTick = now
+                      updateHud()
+                      main.postDelayed(this, 500)
+                  }
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(
+                      NotificationChannel(CHANNEL_ID, "Client status", NotificationManager.IMPORTANCE_LOW)
+                  )
+                  Prefs.sp(this).registerOnSharedPreferenceChangeListener(prefsListener)
+              }
+
+              @Suppress("DEPRECATION")
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == ACTION_STOP) {
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+
+                  val code = intent?.getIntExtra(EXTRA_CODE, Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED
+                  val data: Intent? = if (Build.VERSION.SDK_INT >= 33) {
+                      intent?.getParcelableExtra(EXTRA_DATA, Intent::class.java)
+                  } else {
+                      intent?.getParcelableExtra<Intent>(EXTRA_DATA)
+                  }
+                  val wantCapture = code == Activity.RESULT_OK && data != null && projection == null
+
+                  if (!isForeground) {
+                      if (!promoteToForeground(wantCapture)) {
+                          stopSelf()
+                          return START_NOT_STICKY
+                      }
+                  }
+
+                  if (!running) {
+                      running = true
+                      buildOverlay()
+                      main.post(tick)
+                  }
+
+                  if (wantCapture && data != null) startCapture(code, data)
+                  if (intent?.action == ACTION_CALIBRATE) showCalibration()
+                  return START_NOT_STICKY
+              }
+
+              override fun onDestroy() {
+                  main.removeCallbacksAndMessages(null)
+                  Prefs.sp(this).unregisterOnSharedPreferenceChangeListener(prefsListener)
+                  if (zoomed) ClientAccessibilityService.instance?.zoomOut()
+                  for (e in elements) removeQuietly(e.view)
+                  elements.clear()
+                  watcher?.let { removeQuietly(it) }
+                  watcher = null
+                  calibrationView?.let { removeQuietly(it) }
+                  calibrationView = null
+                  stopCapture()
+                  running = false
+                  super.onDestroy()
+              }
+
+              // ------------------------------------------------------------------ foreground
+
+              private fun promoteToForeground(withProjection: Boolean): Boolean {
+                  val stopPi = PendingIntent.getService(
+                      this, 1, Intent(this, OverlayService::class.java).setAction(ACTION_STOP),
+                      PendingIntent.FLAG_IMMUTABLE
+                  )
+                  val calPi = PendingIntent.getService(
+                      this, 2, Intent(this, OverlayService::class.java).setAction(ACTION_CALIBRATE),
+                      PendingIntent.FLAG_IMMUTABLE
+                  )
+                  @Suppress("DEPRECATION")
+                  val notification = Notification.Builder(this, CHANNEL_ID)
+                      .setContentTitle("MCPE Client is running")
+                      .setContentText("Pull down and tap \"Set Q target\" while Minecraft is open")
+                      .setSmallIcon(android.R.drawable.ic_menu_view)
+                      .setOngoing(true)
+                      .addAction(Notification.Action.Builder(0, "Set Q target", calPi).build())
+                      .addAction(Notification.Action.Builder(0, "Stop", stopPi).build())
+                      .build()
+
+                  return try {
+                      when {
+                          Build.VERSION.SDK_INT >= 34 -> startForeground(
+                              NOTIF_ID, notification,
+                              if (withProjection) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                              else ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                          )
+                          Build.VERSION.SDK_INT >= 29 -> startForeground(
+                              NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MANIFEST
+                          )
+                          else -> startForeground(NOTIF_ID, notific
